@@ -1,76 +1,80 @@
-import streamlit as st
+import re
+import csv
+import os
 import pandas as pd
-from main import get_video_id, get_video_title, get_video_transcript, save_to_csv, display_topics
+import streamlit as st
+from googleapiclient.discovery import build
+from youtube_transcript_api import YouTubeTranscriptApi
+import matplotlib.pyplot as plt
+from sklearn.feature_extraction.text import TfidfVectorizer, CountVectorizer
+from sklearn.decomposition import NMF
 
-# Custom CSS for styling
-st.markdown("""
-    <style>
-    /* Body background color */
-    body {
-        background-color: #f8d7da;
-    }
-    /* Title and main text style */
-    .big-font {
-        font-size: 30px;
-        font-weight: bold;
-        color: #000000;
-        text-align: center;
-        margin-top: 20px;
-    }
-    .icon {
-        display: block;
-        margin-left: auto;
-        margin-right: auto;
-        margin-top: 20px;
-    }
-    .youtube-icon {
-        width: 100px;
-        height: 100px;
-    }
-    .section-header {
-        background-color: #f8d7da;
-        color: #000000;
-        padding: 12px;
-        border-radius: 8px;
-        text-align: center;
-        font-size: 24px;
-        margin-top: 20px;
-    }
-    .subheader {
-        font-size: 22px;
-        color: #000000;
-    }
-    /* Card-style background color */
-    .card {
-        background-color: #f8d7da;
-        border: 1px solid #e6e6e6;
-        border-radius: 8px;
-        padding: 20px;
-        margin-top: 15px;
-        color: #000000;
-    }
-    .card p {
-        font-size: 18px;
-        color: #000000;
-    }
-    </style>
-""", unsafe_allow_html=True)
+# API Key for YouTube API
+API_KEY = 'Your API Key'
+
+# Functions
+def get_video_id(url):
+    video_id_match = re.search(r'(?:v=|\/)([0-9A-Za-z_-]{11}).*', url)
+    return video_id_match.group(1) if video_id_match else None
+
+def get_video_title(video_id):
+    youtube = build('youtube', 'v3', developerKey=API_KEY)
+    request = youtube.videos().list(part='snippet', id=video_id)
+    response = request.execute()
+    title = response['items'][0]['snippet']['title'] if response['items'] else 'Unknown Title'
+    return title
+
+def get_video_transcript(video_id):
+    try:
+        transcript = YouTubeTranscriptApi.get_transcript(video_id)
+        return transcript
+    except Exception as e:
+        print(f"An error occurred: {e}")
+        return []
+
+def save_to_csv(title, transcript, filename):
+    output_dir = "D:\\VideoChaptering"
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+
+    save_path = os.path.join(output_dir, filename)
+    transcript_data = [{'start': entry['start'], 'text': entry['text']} for entry in transcript]
+    df = pd.DataFrame(transcript_data)
+    df.to_csv(save_path, index=False)
+
+    with open(save_path, 'a', newline='') as file:
+        writer = csv.writer(file)
+        writer.writerow(['Title:', title])
+
+    print(f"Transcript saved to: {save_path}")
+    return save_path
+
+def display_topics(model, feature_names, n_top_words):
+    topics = []
+    for topic_idx, topic in enumerate(model.components_):
+        topic_words = [feature_names[i] for i in topic.argsort()[:-n_top_words - 1:-1]]
+        topics.append(" ".join(topic_words))
+    return topics
 
 # Streamlit interface
 st.title("YouTube Video Chaptering App")
-st.markdown('<p class="big-font">Generate logical chapters for YouTube videos based on transcript.</p>', unsafe_allow_html=True)
 
-# Display YouTube icon
 st.markdown("""
-    <div class="icon">
-        <img class="youtube-icon" src="https://i.pinimg.com/originals/79/7b/96/797b96e0880a4fe147f1eaa89d7c7013.gif" alt="YouTube">
-    </div>
+    <style>
+    body { background-color: #f8d7da; }
+    .big-font { font-size: 30px; font-weight: bold; color: #000000; text-align: center; margin-top: 20px; }
+    .icon { display: block; margin-left: auto; margin-right: auto; margin-top: 20px; }
+    .youtube-icon { width: 100px; height: 100px; }
+    .section-header { background-color: #f8d7da; color: #000000; padding: 12px; border-radius: 8px; text-align: center; font-size: 24px; margin-top: 20px; }
+    .card { background-color: #f8d7da; border: 1px solid #e6e6e6; border-radius: 8px; padding: 20px; margin-top: 15px; color: #000000; }
+    </style>
 """, unsafe_allow_html=True)
+
+st.markdown('<p class="big-font">Generate logical chapters for YouTube videos based on transcript.</p>', unsafe_allow_html=True)
 
 # Input for YouTube URL
 url = st.text_input("Enter YouTube video URL:", placeholder="https://www.youtube.com/watch?v=example")
 
-# When the user clicks the process button
 if st.button("Process Video"):
     if url:
         video_id = get_video_id(url)
@@ -88,21 +92,17 @@ if st.button("Process Video"):
                 filename = f"{video_id}_transcript.csv"
                 save_path = save_to_csv(title, transcript, filename)
 
-                # Read the saved transcript
                 transcript_df = pd.read_csv(save_path)
                 st.markdown('<div class="section-header">Transcript Preview</div>', unsafe_allow_html=True)
                 st.dataframe(transcript_df.head())
 
-                # Analyze and display chapters
+                # Chapter generation
                 st.markdown('<div class="section-header">Generated Chapters</div>', unsafe_allow_html=True)
                 transcript_df['start'] = pd.to_numeric(transcript_df['start'], errors='coerce')
                 n_features = 1000
                 n_topics = 10
                 n_top_words = 10
 
-                # Create logical breaks (same as main.py logic)
-                from sklearn.feature_extraction.text import CountVectorizer
-                from sklearn.decomposition import NMF
                 tf_vectorizer = CountVectorizer(max_df=0.95, min_df=2, stop_words='english')
                 tf = tf_vectorizer.fit_transform(transcript_df['text'])
                 nmf = NMF(n_components=n_topics, random_state=42).fit(tf)
@@ -148,7 +148,6 @@ if st.button("Process Video"):
                     chapter_text = transcript_df[
                         (transcript_df['start'] >= break_point) & (transcript_df['dominant_topic'] == topic_idx)
                     ]['text'].str.cat(sep=' ')
-                    from sklearn.feature_extraction.text import TfidfVectorizer
                     vectorizer = TfidfVectorizer(stop_words='english', max_features=3)
                     tfid_matrix = vectorizer.fit_transform([chapter_text])
                     feature_names = vectorizer.get_feature_names_out()
@@ -156,12 +155,11 @@ if st.button("Process Video"):
 
                     chapter_names.append(f"Chapter {i + 1}: {chapter_name}")
 
-                # Display chapters in card format
+                # Display chapters
                 for time, name in zip(chapter_points, chapter_names):
                     st.markdown(f"""
                         <div class="card">
                             <strong>{time}</strong> - {name}
-                            <p>Click to jump to this chapter</p>
                         </div>
                     """, unsafe_allow_html=True)
 
